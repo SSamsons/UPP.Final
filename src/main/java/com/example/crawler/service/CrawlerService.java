@@ -1,5 +1,6 @@
 package com.example.crawler.service;
 
+import com.example.crawler.config.CrawlerConfig;
 import com.example.crawler.model.Company;
 import com.example.crawler.model.CrawlTask;
 import com.example.crawler.repository.CompanyRepository;
@@ -18,6 +19,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
@@ -32,6 +34,7 @@ public class CrawlerService {
     private final WebClientService webClientService;
     private final RestTemplateService restTemplateService;
     private final com.example.crawler.client.HtmlFetchClient htmlFetchClient;
+    private final CrawlerConfig crawlerConfig;
     
     // Metrics
     private final Timer parsingTimer;
@@ -55,6 +58,7 @@ public class CrawlerService {
                          WebClientService webClientService,
                          RestTemplateService restTemplateService,
                          com.example.crawler.client.HtmlFetchClient htmlFetchClient,
+                         CrawlerConfig crawlerConfig,
                          Timer parsingTimer,
                          Timer htmlFetchTimer,
                          Timer databaseSaveTimer,
@@ -71,6 +75,7 @@ public class CrawlerService {
         this.webClientService = webClientService;
         this.restTemplateService = restTemplateService;
         this.htmlFetchClient = htmlFetchClient;
+        this.crawlerConfig = crawlerConfig;
         this.parsingTimer = parsingTimer;
         this.htmlFetchTimer = htmlFetchTimer;
         this.databaseSaveTimer = databaseSaveTimer;
@@ -110,11 +115,12 @@ public class CrawlerService {
     
     private void crawlWebsites(List<String> urls, CrawlTask task) {
         Queue<String> urlQueue = new LinkedList<>(urls);
+        int maxPagesLimit = crawlerConfig.getMaxPages();
         
-        while (!urlQueue.isEmpty() && task.getPagesCrawled() < 100) {
+        while (!urlQueue.isEmpty() && task.getPagesCrawled() < maxPagesLimit) {
             String currentUrl = urlQueue.poll();
             
-            if (visitedUrls.contains(currentUrl)) {
+            if (currentUrl == null || visitedUrls.contains(currentUrl)) {
                 continue;
             }
             
@@ -125,26 +131,34 @@ public class CrawlerService {
             urlsVisitedCounter.increment();
             
             try {
-                logger.info("Crawling: {}", currentUrl);
+                logger.info("Crawling URL: {}", currentUrl);
                 
-                // Trace HTML fetch
+                // Trace HTML fetch with fallback chain
                 String htmlContent = tracingUtil.trace("fetch_html", () -> 
                     htmlFetchTimer.recordCallable(() -> {
                         String content = webClientService.fetchHtmlContent(currentUrl).block();
-                        if (content == null || content.isEmpty()) {
+                        if (content == null || content.trim().isEmpty()) {
                             content = restTemplateService.fetchHtmlContent(currentUrl);
                         }
-                        if (content == null || content.isEmpty()) {
+                        if (content == null || content.trim().isEmpty()) {
                             try {
-                                content = htmlFetchClient.fetch(currentUrl, "CompanyCrawler/1.0");
-                            } catch (Exception ignore) {}
+                                content = htmlFetchClient.fetch(currentUrl, crawlerConfig.getUserAgent());
+                            } catch (Exception ex) {
+                                logger.debug("Feign client failed for URL: {}", currentUrl, ex);
+                            }
                         }
-                        if (content == null || content.isEmpty()) {
+                        if (content == null || content.trim().isEmpty()) {
                             content = htmlParser.fetchHtmlContent(currentUrl);
                         }
-                        return content;
+                        return content != null ? content : "";
                     })
                 );
+                
+                if (htmlContent == null || htmlContent.trim().isEmpty()) {
+                    logger.warn("Empty HTML content retrieved for URL: {}", currentUrl);
+                    parsingErrorCounter.increment();
+                    continue;
+                }
                 
                 // Trace parsing
                 Company company = tracingUtil.trace("parse_contacts", () -> 
@@ -153,11 +167,12 @@ public class CrawlerService {
                     )
                 );
                 
-                if (company != null) {
+                if (company != null && isValidCompany(company)) {
                     parsingSuccessCounter.increment();
                     tracingUtil.trace("save_company", () -> saveCompanyIfNew(company));
                 } else {
                     parsingErrorCounter.increment();
+                    logger.debug("Failed to extract valid company data from URL: {}", currentUrl);
                 }
                 
                 // Trace link extraction
@@ -166,18 +181,33 @@ public class CrawlerService {
                 );
                 
                 for (String newUrl : newUrls) {
-                    if (!visitedUrls.contains(newUrl)) {
+                    if (newUrl != null && !visitedUrls.contains(newUrl) && urlQueue.size() < maxPagesLimit * 2) {
                         urlQueue.add(newUrl);
                     }
                 }
                 
-                Thread.sleep(1000);
+                // Rate limiting to avoid overwhelming servers
+                try {
+                    TimeUnit.MILLISECONDS.sleep(500);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    logger.warn("Crawling interrupted");
+                    break;
+                }
                 
             } catch (Exception e) {
                 parsingErrorCounter.increment();
-                logger.warn("Failed to crawl URL: {}", currentUrl, e);
+                logger.warn("Error crawling URL: {}", currentUrl, e);
             }
         }
+    }
+    
+    private boolean isValidCompany(Company company) {
+        return company != null && 
+               company.getName() != null && 
+               !company.getName().trim().isEmpty() &&
+               company.getWebsite() != null &&
+               !company.getWebsite().trim().isEmpty();
     }
     
     @Transactional

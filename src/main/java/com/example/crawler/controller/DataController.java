@@ -46,18 +46,34 @@ public class DataController {
             @RequestParam(defaultValue = "10") int size,
             @RequestParam(required = false) String search) {
         
+        if (page < 0) {
+            page = 0;
+        }
+        if (size <= 0) {
+            size = 10;
+        }
+        
         List<Company> companies = dataProcessingService.filterAndSortCompanies(search, "name", true);
         
-        int start = Math.min(page * size, companies.size());
-        int end = Math.min((page + 1) * size, companies.size());
-        List<Company> pageContent = companies.subList(start, end);
+        int total = companies.size();
+        int start = page * size;
+        int end = Math.min(start + size, total);
+        
+        List<Company> pageContent;
+        if (start >= total || start < 0) {
+            pageContent = new java.util.ArrayList<>();
+        } else {
+            pageContent = companies.subList(start, end);
+        }
+        
+        int totalPages = total > 0 ? (int) Math.ceil((double) total / size) : 0;
         
         Map<String, Object> response = Map.of(
             "content", pageContent,
             "page", page,
             "size", size,
-            "total", companies.size(),
-            "totalPages", (int) Math.ceil((double) companies.size() / size)
+            "total", total,
+            "totalPages", totalPages
         );
         
         return ResponseEntity.ok(response);
