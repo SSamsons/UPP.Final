@@ -1,0 +1,51 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### H2 Database ###
+data/*.mv.db
+data/*.trace.db
+data/*.lock.db
+
+### Logs ###
+logs/
+*.log
+
+### JFR ###
+*.jfr
+
+### Heap Dumps ###
+*.hprof
+
+### OS ###
+.DS_Store
+Thumbs.db
